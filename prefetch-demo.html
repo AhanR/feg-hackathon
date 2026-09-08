@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Empire of Gold</title>
+  <style>
+    /* === Reset & Base === */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: default;
+    }
+
+    /* === Thumbnail (visible by default) === */
+    #thumbnail {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 600px;
+      height: 600px;
+      margin-left: -300px;
+      margin-top: -300px;
+      background: linear-gradient(135deg, #1a1a2e, #16213e);
+      border: 2px solid #ffd700;
+      border-radius: 12px;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    #thumbnail:hover {
+      border-color: #ffaa00;
+      box-shadow: 0 0 40px rgba(255, 215, 0, 0.3);
+    }
+
+    #thumbnail span { font-size: 1.5rem; color: #ffd700; font-weight: 600; }
+
+    /* === Popup === */
+    #popupOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #popupOverlay.visible { display: flex; }
+
+    #popup {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 32px 40px;
+      text-align: center;
+      max-width: 400px;
+    }
+
+    #popup h2 { color: #ffd700; font-size: 1.5rem; margin-bottom: 8px; }
+
+    #popup p { color: #888; margin-bottom: 24px; font-size: 0.9rem; }
+
+    #popupButtons { display: flex; gap: 12px; justify-content: center; }
+
+    .popup-btn {
+      padding: 10px 28px;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+
+    .popup-btn:hover { transform: scale(1.05); }
+
+    #yesPlayBtn { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; }
+
+    /* === Game iframe === */
+    #gameContainer {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+    }
+
+    #gameContainer.visible { display: block; }
+
+    #gameContainer iframe { width: 100%; height: 100%; border: none; }
+  </style>
+</head>
+<body>
+  <div id="thumbnail" role="button" tabindex="0" aria-label="Game thumbnail">
+    <span>Game Thumbnail</span>
+  </div>
+
+  <div id="popupOverlay" role="dialog" aria-label="Launch confirmation">
+    <div id="popup">
+      <h2>Ready to Play</h2>
+      <p>Click below to launch the game</p>
+      <div id="popupButtons">
+        <button class="popup-btn" id="yesPlayBtn">Yes, Play</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="gameContainer">
+    <iframe id="gameFrame" src=""></iframe>
+  </div>
+
+  <script>
+    (function (root) {
+      "use strict";
+      function loadChunk(baseUrl, index) { return fetch(baseUrl + "/api/prefetch/chunk?index=" + index).then(function (res) { return res.json(); }); }
+      function classifyCache(url) {
+        try {
+          var e = performance.getEntriesByName(url).pop();
+          if (e && typeof e.transferSize === "number") {
+            return e.transferSize === 0 ? "hit" : "miss";
+          }
+        } catch (err) {}
+        return "unknown";
+      }
+      function fetchFile(baseUrl, relPath) {
+        var url = baseUrl + "/" + relPath;
+        return fetch(url, { cache: "force-cache" }).then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.arrayBuffer();
+        }).then(function () {
+          var status = classifyCache(url);
+          if (status === "miss") {
+            var e = performance.getEntriesByName(url).pop();
+            var kb = e ? (e.transferSize / 1024).toFixed(1) : "?";
+            console.log("[cache MISS]", relPath, "-", kb + "KB over network");
+          } else if (status === "hit") {
+            console.log("[cache HIT]", relPath);
+          }
+          return status;
+        });
+      }
+      function prefetchGame(options) {
+        console.log("prefetchGame initialized with options:", options);
+        var opts = options || {};
+        var baseUrl = opts.baseUrl || "";
+        var thumbnailEl = opts.thumbnailEl || null;
+        var thumbnail = opts.thumbnail || { x: 0, y: 0, width: 600, height: 600 };
+        var chunks = opts.chunks || 6;
+        var threshold = opts.threshold || 20;
+        var inertiaFactor = opts.inertiaFactor || 0.05;
+        var onChunkLoaded = opts.onChunkLoaded || function () {};
+        var onGameReady = opts.onGameReady || function () {};
+        var onDone = opts.onDone || function () {};
+        var onError = opts.onError || function () {};
+        var intervalId = null;
+        var lastX = null;
+        var lastY = null;
+        var dX = 0;
+        var dY = 0;
+        var cancelled = false;
+        var downloading = false;
+        var currentChunkIndex = 0;
+        var done = false;
+        function getThumbRect() {
+          if (thumbnailEl && typeof thumbnailEl.getBoundingClientRect === "function") {
+            return thumbnailEl.getBoundingClientRect();
+          }
+          return { left: thumbnail.x, top: thumbnail.y, right: thumbnail.x + thumbnail.width, bottom: thumbnail.y + thumbnail.height };
+        }
+        function isNear(x, y) {
+          var r = getThumbRect();
+          return x >= r.left - threshold && x <= r.right + threshold && y >= r.top - threshold && y <= r.bottom + threshold;
+        }
+        function downloadChunk(index) {
+          console.log("downloadChunk called for chunk index:", index);
+          if (cancelled || downloading || done) return;
+          downloading = true;
+          loadChunk(baseUrl, index).then(function (data) {
+            if (cancelled) { downloading = false; return; }
+            var chunkFiles = data.chunk || [];
+            if (data.done || chunkFiles.length === 0) {
+              done = true;
+              downloading = false;
+              console.log("All chunks downloaded");
+              onDone();
+              return;
+            }
+            console.log("Downloading chunk", data.chunkIndex, "-", chunkFiles.length, "files");
+            var promises = chunkFiles.map(function (url) { return fetchFile(baseUrl, url).catch(function (err) { onError({ url: url, error: err }); return "miss"; }); });
+            return Promise.allSettled(promises).then(function (results) {
+              var hits = 0, misses = 0, unknown = 0;
+              results.forEach(function (r) {
+                if (r.status === "fulfilled") {
+                  if (r.value === "hit") hits++;
+                  else if (r.value === "miss") misses++;
+                  else unknown++;
+                } else {
+                  misses++;
+                }
+              });
+              console.log("Chunk " + data.chunkIndex + ": " + hits + " cached, " + misses + " fetched over network" + (unknown ? ", " + unknown + " unknown" : ""));
+              currentChunkIndex = data.chunkIndex + 1;
+            });
+          }).then(function () { downloading = false; if (!cancelled) { onChunkLoaded(currentChunkIndex, chunks); } }).catch(function (err) { downloading = false; onError({ url: null, error: err }); });
+        }
+        function checkMouse(mouseX, mouseY) {
+          if (mouseX === null || mouseY === null) return;
+          var near = isNear(mouseX, mouseY);
+          console.log("Mouse inside thumbnail (+20px):", near);
+          if (!near) return;
+          var targetX = mouseX + inertiaFactor * dX;
+          var targetY = mouseY + inertiaFactor * dY;
+          if (!isNear(targetX, targetY)) return;
+          if (!done) {
+            console.log("Mouse near thumbnail - starting chunk download for chunk", currentChunkIndex);
+            downloadChunk(currentChunkIndex);
+          }
+        }
+        function tick() {
+          if (cancelled) return;
+          console.log("Prefetch loop tick - checking mouse position");
+          checkMouse(lastX, lastY);
+        }
+        function start() {
+          console.log("prefetch loop started");
+          if (intervalId !== null) return;
+          intervalId = setInterval(tick, 300);
+        }
+        function cancel() {
+          console.log("prefetch loop cancelled");
+          if (intervalId !== null) {
+            clearInterval(intervalId);
+            intervalId = null;
+          }
+          cancelled = true;
+          onGameReady();
+        }
+        function onMouseMove(e) {
+          if (cancelled) return;
+          var nowX = e.clientX;
+          var nowY = e.clientY;
+          if (lastX !== null) {
+            dX = nowX - lastX;
+            dY = nowY - lastY;
+          }
+          lastX = nowX;
+          lastY = nowY;
+          console.log("Mouse moved - dX:", dX.toFixed(2), "dY:", dY.toFixed(2));
+        }
+        return { start: start, cancel: cancel, onMouseMove: onMouseMove };
+      }
+      root.prefetchGame = prefetchGame;
+    })(typeof globalThis !== "undefined" ? globalThis : this);
+  </script>
+  <script>
+    (function () {
+      var BASE_URL = "http://localhost:8000";
+      var PREFETCH_CONFIG = {
+        thumbnailEl: document.getElementById("thumbnail"),
+        thumbnail: { x: 0, y: 0, width: 600, height: 600 },
+        baseUrl: BASE_URL,
+        chunks: 6,
+        threshold: 20,
+        inertiaFactor: 0.05,
+        onChunkLoaded: function (index, total) {
+          console.log("Chunk", index, "of", total, "loaded");
+        },
+        onDone: function () {
+          console.log("Prefetch complete");
+        },
+        onError: function (info) {
+          console.error("Prefetch error:", info.url || "(request)", info.error);
+        },
+      };
+
+      var dom = {
+        thumbnail: document.getElementById("thumbnail"),
+        popupOverlay: document.getElementById("popupOverlay"),
+        yesPlayBtn: document.getElementById("yesPlayBtn"),
+        gameContainer: document.getElementById("gameContainer"),
+        gameFrame: document.getElementById("gameFrame"),
+      };
+
+      var gameInstance = prefetchGame(PREFETCH_CONFIG);
+      document.addEventListener("mousemove", gameInstance.onMouseMove);
+      gameInstance.start();
+
+      dom.thumbnail.addEventListener("click", function () {
+        gameInstance.cancel();
+        document.removeEventListener("mousemove", gameInstance.onMouseMove);
+        gameInstance = null;
+
+        dom.gameFrame.src = BASE_URL + "/";
+        dom.popupOverlay.classList.add("visible");
+      });
+
+      dom.yesPlayBtn.addEventListener("click", function () {
+        dom.thumbnail.style.display = "none";
+        dom.popupOverlay.classList.remove("visible");
+        dom.gameContainer.classList.add("visible");
+      });
+    })();
+  </script>
+</body>
+</html>
