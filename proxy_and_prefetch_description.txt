@@ -1,0 +1,26 @@
+PROXY / PREFETCH SERVICE — TECHNICAL DESCRIPTION (NOT LEGAL ADVICE)
+
+This server (server.py / server-go) is infrastructure for caching and delivering static assets and preload APIs for a gaming web application. It is not a gambling operator, payment processor, or game-authority.
+
+WHAT IT DOES
+- Serves compressed static files (br / gzip) from disk caches
+- Provides /api/prefetch and /api/prefetch/chunk to list and split asset batches for warm-up
+- Delivers the frontend lobby (app/) at / and the game build (game/) at /game
+- Applies CORS and Cache-Control headers for browser clients
+
+WHAT IT DOES NOT DO
+- Does not process wagers, deposits, withdrawals, or user accounts
+- Does not influence game outcomes, RNG, payouts, or betting rules
+- Does not host betting markets or offer gambling services directly
+- Cache/preload is purely delivery optimization; it has no effect on game mechanics
+
+COMPLIANCE / REGULATORY NOTE
+This file does not constitute a legal opinion or compliance certification. The operator of the gambling platform (not this caching layer) is responsible for licensing, age verification, self-exclusion tools, responsible-gambling messaging, and adherence to applicable EU and local gambling laws (e.g., GDPR for data, national gaming authority rules for betting). If you need legal assurances for regulators, consult qualified gaming-law counsel and the relevant national authority (e.g., Malta MGA, UK Gambling Commission, etc.).
+
+SAFE-GAMBLING / EU LAW CONTEXT (GENERAL ONLY)
+- Caching/proxy services are generally neutral infrastructure
+- Compliance obligations (KYC, player protection, advertising rules, tax) apply to the platform/business, not to static-file delivery
+- This service can support harm-reduction only indirectly: faster preload reduces frustration; it does not alter odds, limits, or player behavior
+
+CONTACT / OWNERSHIP
+The platform owner (operator of empireofgold / EMPIRE) holds regulatory responsibility. Technical infrastructure provider has no role in gambling outcomes.

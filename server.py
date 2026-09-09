@@ -1,8 +1,9 @@
 import os
 import mimetypes
 import hashlib
-from fastapi import FastAPI, Request, Response, Query
+from fastapi import FastAPI, Request, Response, Query, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
@@ -59,6 +60,31 @@ CACHE_CONTROL = {
 }
 
 
+def resolve_file(path: str) -> str | None:
+    if path == "/" or path == "/index.html":
+        target = os.path.join(ROOT, "app", "index.html")
+        if os.path.isfile(target):
+            return target
+    if path.startswith("/game/") or path == "/game":
+        rel = path[len("/game"):].lstrip("/")
+        target = os.path.join(ROOT, "game", rel)
+        if os.path.isfile(target):
+            return target
+        index_target = os.path.join(ROOT, "game", rel, "index.html") if rel else os.path.join(ROOT, "game", "index.html")
+        if os.path.isfile(index_target):
+            return index_target
+        return None
+    # All other paths -> app/
+    rel = path.lstrip("/")
+    target = os.path.join(ROOT, "app", rel)
+    if os.path.isfile(target):
+        return target
+    index_target = os.path.join(ROOT, "app", rel, "index.html")
+    if os.path.isfile(index_target):
+        return index_target
+    return None
+
+
 def get_mime(path: str) -> str:
     ext = os.path.splitext(path)[1]
     return MIME_TYPES.get(ext, mimetypes.guess_type(path)[0] or "application/octet-stream")
@@ -69,7 +95,8 @@ def get_cache_control(path: str) -> str:
     return CACHE_CONTROL.get(ext, "public, max-age=3600")
 
 
-def cache_path(rel: str, encoding: str) -> str:
+def cache_path(abs_path: str, encoding: str) -> str:
+    rel = os.path.relpath(abs_path, ROOT)
     safe = rel.replace("/", "__").replace("\\", "__")
     return os.path.join(CACHE_DIR, f"{safe}.{encoding}")
 
@@ -106,10 +133,8 @@ class CompressionMiddleware(BaseHTTPMiddleware):
         is_compressible = ext in COMPRESSIBLE
 
         if is_compressible and (want_br or want_gz):
-            rel = path.lstrip("/")
-            orig = os.path.join(ROOT, rel)
-
-            if os.path.isfile(orig):
+            resolved = resolve_file(path)
+            if resolved and os.path.isfile(resolved):
                 mime = get_mime(path)
                 cc = get_cache_control(path)
                 headers = {
@@ -119,13 +144,13 @@ class CompressionMiddleware(BaseHTTPMiddleware):
                 }
 
                 if want_br:
-                    cp = cache_path(rel, "br")
+                    cp = cache_path(resolved, "br")
                     if os.path.isfile(cp):
                         data = open(cp, "rb").read()
                         headers["Content-Encoding"] = "br"
                         return Response(content=data, status_code=200, headers=headers)
                     else:
-                        raw = open(orig, "rb").read()
+                        raw = open(resolved, "rb").read()
                         compressed = compress_brotli(raw)
                         if compressed:
                             open(cp, "wb").write(compressed)
@@ -133,13 +158,13 @@ class CompressionMiddleware(BaseHTTPMiddleware):
                             return Response(content=compressed, status_code=200, headers=headers)
 
                 if want_gz:
-                    cp = cache_path(rel, "gz")
+                    cp = cache_path(resolved, "gz")
                     if os.path.isfile(cp):
                         data = open(cp, "rb").read()
                         headers["Content-Encoding"] = "gzip"
                         return Response(content=data, status_code=200, headers=headers)
                     else:
-                        raw = open(orig, "rb").read()
+                        raw = open(resolved, "rb").read()
                         compressed = compress_gzip(raw)
                         open(cp, "wb").write(compressed)
                         headers["Content-Encoding"] = "gzip"
@@ -259,4 +284,29 @@ def prefetch_chunk(
 
 
 app.add_middleware(CompressionMiddleware)
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+
+@app.get("/{path:path}")
+def static_catchall(path: str = ""):
+    full_path = "/" + path
+    # Resolve with same logic as middleware
+    resolved = resolve_file(full_path)
+    if resolved is None:
+        # Try directory + index.html behavior for /folder paths
+        if path and not path.startswith("/"):
+            folder_path = os.path.join(ROOT, "app", path)
+            if os.path.isdir(folder_path):
+                index_path = os.path.join(folder_path, "index.html")
+                if os.path.isfile(index_path):
+                    return FileResponse(index_path)
+            # also try game folder for /game subfolders if needed
+            game_folder = os.path.join(ROOT, "game", path)
+            if os.path.isdir(game_folder):
+                index_path = os.path.join(game_folder, "index.html")
+                if os.path.isfile(index_path):
+                    return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not Found")
+    if os.path.isfile(resolved):
+        return FileResponse(resolved)
+    # If resolved points to missing file but path is dir (with /game or /app)
+    # (resolve_file already handles index.html for dirs when called with exact path)
+    raise HTTPException(status_code=404, detail="Not Found")
